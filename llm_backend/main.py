@@ -375,10 +375,14 @@ async def langgraph_query(
         except Exception as e:
             logger.warning(f"Error retrieving state: {e}. Starting with fresh state.")
         
-        #准输入输入状态 - 如果是现有会话，直接传入查询文本
+        # 准输入输入状态 - 如果是现有会话，直接传入查询文本
         if state_history and len(state_history) > 0 and len(state_history[-1]) > 0:
             logger.info("Using existing conversation state")
-            # 如果有现有会话，使用resume命令继续对话
+            # 如果有现有会话，使用 resume 命令继续对话
+                    
+            # 收集完整响应内容
+            full_response = []
+                    
             async def process_stream():
                 async for c, metadata in graph.astream(
                     Command(resume=query), 
@@ -387,21 +391,39 @@ async def langgraph_query(
                 ):
                     #只处理最终展示给用户的内容，跳过中间工具调用和内部状态
                     if c.content and "research_plan" not in metadata.get("tags", []) and not c.additional_kwargs.get("tool_calls"):
-                        # 关键修改：使用json.dumps处理content，确保特殊字符如换行符被正确处理
+                        # 关键修改：使用 json.dumps 处理 content，确保特殊字符如换行符被正确处理
                         content_json = json.dumps(c.content, ensure_ascii=False)
+                        full_response.append(c.content)  # 收集响应
                         yield f"data: {content_json}\n\n"
-                        
+                                
                     #工具调用单独处理，不发送给前端
                     elif c.additional_kwargs.get("tool_calls"):
                         tool_data = c.additional_kwargs.get("tool_calls")[0]["function"].get("arguments")
                         logger.debug(f"Tool call: {tool_data}")
-                        
+                                
                 # 处理中断情况
                 state = graph.get_state(thread_config)
                 if len(state) > 0 and len(state[-1]) > 0:
                     if len(state[-1][0].interrupts) > 0:
                         interrupt_json = json.dumps({"interruption": True, "conversation_id": thread_id})
                         yield f"data: {interrupt_json}\n\n"
+                        
+                # 保存对话到数据库
+                if full_response:
+                    try:
+                        # 构建消息历史（包含之前的历史 + 当前查询）
+                        messages = [{"role": "user", "content": query}]
+                        response_text = "".join(full_response)
+                                
+                        await ConversationService.save_message(
+                            user_id=user_id,
+                            conversation_id=int(thread_id),  # 转换类型
+                            messages=messages,
+                            response=response_text
+                        )
+                        logger.info(f"Saved LangGraph conversation for user {user_id}, conversation {thread_id}")
+                    except Exception as e:
+                        logger.error(f"Failed to save LangGraph conversation: {e}")
         else:
             # 新会话或找不到现有状态，创建新的输入状态
             logger.info("Creating new conversation state")
@@ -409,7 +431,10 @@ async def langgraph_query(
             from langchain_core.messages import HumanMessage
             input_messages = [HumanMessage(content=query)]
             input_state = InputState(messages=input_messages)
-            
+                    
+            # 收集完整响应内容
+            full_response = []
+                    
             #流式处理查询
             async def process_stream():
                 async for c, metadata in graph.astream(
@@ -419,21 +444,39 @@ async def langgraph_query(
                 ):
                     #只处理最终展示给用户的内容，跳过中间工具调用和内部状态
                     if c.content and "research_plan" not in metadata.get("tags", []) and not c.additional_kwargs.get("tool_calls"):
-                        # 关键修改：使用json.dumps处理content，确保特殊字符如换行符被正确处理
+                        # 关键修改：使用 json.dumps 处理 content，确保特殊字符如换行符被正确处理
                         content_json = json.dumps(c.content, ensure_ascii=False)
+                        full_response.append(c.content)  # 收集响应
                         yield f"data: {content_json}\n\n"
-                        
+                                
                     #工具调用单独处理，不发送给前端
                     elif c.additional_kwargs.get("tool_calls"):
                         tool_data = c.additional_kwargs.get("tool_calls")[0]["function"].get("arguments")
                         logger.debug(f"Tool call: {tool_data}")
-                        
+                                
                 # 处理中断情况
                 state = graph.get_state(thread_config)
                 if len(state) > 0 and len(state[-1]) > 0:
                     if len(state[-1][0].interrupts) > 0:
                         interrupt_json = json.dumps({"interruption": True, "conversation_id": thread_id})
                         yield f"data: {interrupt_json}\n\n"
+                        
+                # 保存对话到数据库
+                if full_response:
+                    try:
+                        # 构建消息历史（包含之前的历史 + 当前查询）
+                        messages = [{"role": "user", "content": query}]
+                        response_text = "".join(full_response)
+                                
+                        await ConversationService.save_message(
+                            user_id=user_id,
+                            conversation_id=int(thread_id),  # 转换类型
+                            messages=messages,
+                            response=response_text
+                        )
+                        logger.info(f"Saved LangGraph conversation for user {user_id}, conversation {thread_id}")
+                    except Exception as e:
+                        logger.error(f"Failed to save LangGraph conversation: {e}")
         
         response = StreamingResponse(
             process_stream(),
