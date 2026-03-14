@@ -3,7 +3,6 @@ import asyncio
 import os
 from pathlib import Path
 from pydantic import BaseModel, Field
-from langchain_core.runnables import RunnableConfig
 
 # 导入GraphRAG相关模块
 import app.graphrag.graphrag.api as api
@@ -58,31 +57,15 @@ def create_cypher_query_node(
 
     async def cypher_query(
         state: Dict[str, Any],
-        config: RunnableConfig = None,
     ) -> Dict[str, List[CypherQueryOutputState] | List[str]]:
         """
-        执行 Text2Cypher 查询并返回结果。
+        执行Text2Cypher查询并返回结果。
         """
         errors = list()
         # 获取查询文本
         query = state.get("task", "")
         if not query:
             errors.append("未提供查询文本")
-            
-        # 从 config 中获取 user_id
-        user_id = None
-        if config:
-            user_id = config.get("configurable", {}).get("user_id")
-            logger.info(f"从 config 中获取到 user_id: {user_id}")
-            
-        if not user_id:
-            # 如果 config 中没有，尝试从 state 中获取
-            user_id = state.get("user_id")
-            logger.info(f"从 state 中获取到 user_id: {user_id}")
-            
-        if not user_id:
-            logger.warning("未找到 user_id，使用默认值 101")
-            user_id = 101
  
         # 使用大模型执行查询/多跳/并行查询计划
         # 1. 根据.env文件中AGENT_SERVICE的设置，选择使用DeepSeek或Ollama启动的模型服务
@@ -187,7 +170,7 @@ def create_cypher_query_node(
             cypher_statement = cypher_statement.replace(".ShippedDate", ".Status")  # 用Status替代
             cypher_statement = cypher_statement.replace(".Freight", ".TotalAmount")  # 用TotalAmount替代
             
-            # 修正 RETURN 子句中的属性引用
+            # 修正RETURN子句中的属性引用
             if "RETURN" in cypher_statement.upper():
                 # 移除不存在的属性
                 cypher_statement = cypher_statement.replace(", o.ShippedDate", "")
@@ -195,20 +178,8 @@ def create_cypher_query_node(
                 # 添加实际存在的属性
                 if "o.OrderID" in cypher_statement and "o.Status" not in cypher_statement:
                     cypher_statement = cypher_statement.replace("o.OrderID,", "o.OrderID, o.Status,")
-                        
-            # 关键修正：将 Customer 节点的 UserID 属性值替换为实际的 user_id
-            # 匹配模式：{UserID: 'xxx'} 并替换为实际的 user_id
-            import re
-            def replace_user_id(match):
-                return f"{{UserID: {user_id}}}"
-                        
-            cypher_statement = re.sub(
-                r'\{UserID:\s*[\'"]?[^\}]+?\}',
-                replace_user_id,
-                cypher_statement
-            )
-                        
-            logger.info(f"修正后的 Cypher 语句：{cypher_statement}")
+                
+            logger.info(f"修正后的Cypher语句: {cypher_statement}")
             
         # 创建符合执行节点期望的cypher字典
         cypher_dict = {
