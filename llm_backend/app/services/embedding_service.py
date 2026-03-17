@@ -8,7 +8,8 @@ import os
 import hashlib
 import time
 import PyPDF2
-
+from app.core.logger import get_logger
+logger = get_logger(service="embedding_service")
 class EmbeddingService:
     def __init__(self):
         # 使用多语言模型以支持中文
@@ -42,14 +43,58 @@ class EmbeddingService:
     async def create_embeddings(self, file_path: str, index_dir: str) -> Dict:
         """从文件创建向量索引"""
         try:
-            # 读取 PDF 文件内容
+            # 读取文件内容（支持 PDF 和 TXT）
             text_chunks = []
-            with open(file_path, 'rb') as f:
-                pdf_reader = PyPDF2.PdfReader(f)
-                for page in pdf_reader.pages:
-                    text_chunks.append(page.extract_text())
+            file_ext = os.path.splitext(file_path)[1].lower()
             
-            # 创建索引
+            if file_ext == '.pdf':
+                # 尝试多种方法解析 PDF
+                try:
+                    # 方法 1: 使用 PyPDF2
+                    with open(file_path, 'rb') as f:
+                        pdf_reader = PyPDF2.PdfReader(f)
+                        for page in pdf_reader.pages:
+                            text = page.extract_text()
+                            if text and text.strip():
+                                text_chunks.append(text)
+                except Exception as e:
+                    logger.warning(f"PyPDF2 解析失败，尝试备用方法：{e}")
+                    # 方法 2: 如果是文本型 PDF，尝试直接读取
+                    try:
+                        import fitz  # PyMuPDF
+                        doc = fitz.open(file_path)
+                        for page in doc:
+                            text = page.get_text()
+                            if text and text.strip():
+                                text_chunks.append(text)
+                        doc.close()
+                    except ImportError:
+                        logger.warning("PyMuPDF 未安装，使用纯文本提取")
+                        # 方法 3: 简单提取文本（效果较差）
+                        with open(file_path, 'rb') as f:
+                            content = f.read().decode('utf-8', errors='ignore')
+                            # 按段落分割
+                            paragraphs = [p.strip() for p in content.split('\n\n') if len(p.strip()) > 50]
+                            text_chunks = paragraphs[:20]  # 限制最多 20 段
+            else:
+                # 文本文件直接读取
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                    # 按段落或固定长度分块
+                    chunk_size = 500
+                    text_chunks = [
+                        content[i:i+chunk_size] 
+                        for i in range(0, len(content), chunk_size)
+                        if len(content[i:i+chunk_size]) > 50
+                    ]
+            
+            # 验证是否有有效文本
+            valid_chunks = [chunk for chunk in text_chunks if chunk and chunk.strip()]
+            if not valid_chunks:
+                raise ValueError("文件内容为空或无法解析")
+            text_chunks = valid_chunks
+            
+            logger.info(f"成功提取 {len(text_chunks)} 个文本块")
             index = self._create_index()
             
             # 使用 SentenceTransformer 生成向量
@@ -76,6 +121,10 @@ class EmbeddingService:
             
             # 保存索引和文档数据
             self._save_index(file_hash, index, documents)
+            
+            # 自动加载刚创建的索引
+            self._load_index(index_id)
+            logger.info(f"已自动加载索引：{index_id}")
             
             return {
                 "status": "success",

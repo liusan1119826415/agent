@@ -569,6 +569,42 @@ async def upload_image(
         logger.error(f"Image upload failed for user {user_id}: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
+# ========== RAG 相关接口 ==========
+from app.services.rag_service import rag_service
+
+@app.post("/api/rag/upload")
+async def upload_document(file: UploadFile = File(...)):
+    """上传文档到 RAG 系统"""
+    try:
+        # 保存临时文件
+        temp_path = Path("uploads/temp") / file.filename
+        temp_path.parent.mkdir(exist_ok=True)
+        
+        with open(temp_path, "wb") as f:
+            f.write(await file.read())
+        
+        # 创建索引
+        result = await rag_service.upload_document(str(temp_path))
+        
+        # 清理临时文件
+        temp_path.unlink()
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"上传失败：{e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/rag/query")
+async def rag_query(
+    query: str = Form(...),
+    index_id: Optional[str] = Form(None),
+    top_k: int = Form(default=3)
+):
+    """查询文档 RAG"""
+    result = await rag_service.query_documents(query, top_k=top_k, index_id=index_id)
+    return result
+
 # 最后挂载静态文件，并确保使用绝对路径
 STATIC_DIR = Path(__file__).parent / "static" / "dist"
 app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
